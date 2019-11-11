@@ -3,6 +3,13 @@
 Created on Sat Jun  8 08:57:39 2019
 
 @author: Jarvis
+
+At present this file will look in the directory it is run from for a .csv file.
+
+Matched time and date from Dates keyword
+
+And plots a number of html files.  The map one is called STATICMAP.
+
 """
 
 
