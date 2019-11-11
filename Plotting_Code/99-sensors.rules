@@ -1,0 +1,14 @@
+# SDS PM Sensors
+#
+# Port 1-1.2 = SDS01:
+KERNEL=="ttyUSB*", KERNELS=="1-1.2", ATTRS{idProduct}=="7523", ATTRS{idVendor}=="1a86", SYMLINK+="ttySDS01"
+# Port 1-1.3 = SDS02:
+KERNEL=="ttyUSB*", KERNELS=="1-1.3", ATTRS{idProduct}=="7523", ATTRS{idVendor}=="1a86", SYMLINK+="ttySDS02"
+# Port 1-1.4 = SDS03:
+KERNEL=="ttyUSB*", KERNELS=="1-1.4", ATTRS{idProduct}=="7523", ATTRS{idVendor}=="1a86", SYMLINK+="ttySDS03"
+# Port 1-1.5 = SDS04:
+KERNEL=="ttyUSB*", KERNELS=="1-1.5", ATTRS{idProduct}=="7523", ATTRS{idVendor}=="1a86", SYMLINK+="ttySDS04"
+# Port 1-1.1.3 = SDS03:
+KERNEL=="ttyUSB*", KERNELS=="1-1.1.3", ATTRS{idProduct}=="7523", ATTRS{idVendor}=="1a86", SYMLINK+="ttySDS03"
+# Port 1-1.1.2 = SDS04:
+KERNEL=="ttyUSB*", KERNELS=="1-1.1.2", ATTRS{idProduct}=="7523", ATTRS{idVendor}=="1a86", SYMLINK+="ttySDS04"

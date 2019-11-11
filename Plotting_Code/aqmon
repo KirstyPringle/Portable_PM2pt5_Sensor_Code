@@ -1,0 +1,292 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+aqmon
+
+monitor / log air quality sensor data
+"""
+
+import datetime
+import os
+import signal
+import struct
+import sys
+import time
+import gps
+import serial
+
+#--- Config:
+
+# Output directory:
+OUT_DIR = '/home/pi/Output_Data'
+
+# Interval between data collecting (seconds):
+DATA_INTERVAL = 20
+
+# Date format for CSV file:
+DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
+
+# Missing value for CSV file:
+MISSING_VALUE = float('nan')
+
+# Define SDS sensors:
+SDS_SENSORS = [
+    {'name': 'sds01', 'port': '/dev/ttySDS01', 'baud_rate': 9600},
+    {'name': 'sds02', 'port': '/dev/ttySDS02', 'baud_rate': 9600},
+    {'name': 'sds03', 'port': '/dev/ttySDS03', 'baud_rate': 9600},
+    {'name': 'sds04', 'port': '/dev/ttySDS04', 'baud_rate': 9600}
+]
+
+#---
+
+class SDS011(object):
+    """
+    SDS011
+
+    Class to talk to SDS011 sensor
+    """
+    def __init__(self, serial_port, baud_rate):
+        # Serial port and baud rate:
+        self.serial_port = serial_port
+        self.baud_rate = baud_rate
+        # Serial options
+        self.serial_opts = {
+            "port": self.serial_port,
+            "baudrate": self.baud_rate,
+            "parity": serial.PARITY_NONE,
+            "bytesize": serial.EIGHTBITS,
+            "stopbits": serial.STOPBITS_ONE,
+            "xonxoff": False,
+            "timeout": 1
+        }
+        # Try to init serial connection:
+        self.serial_conn = serial.Serial(**self.serial_opts)
+        # Close connection:
+        self.close_conn()
+
+    def __repr__(self):
+        self_repr = ''.join(['<SDS011 sensor. Port: {}, ',
+                             'Baud Rate: {}>']).format(self.serial_port,
+                                                       self.baud_rate)
+        return self_repr
+
+    def open_conn(self):
+        """
+        Open serial connection
+        """
+        self.serial_conn.open()
+
+    def close_conn(self):
+        """
+        Close serial connection
+        """
+        self.serial_conn.close()
+
+    def process_frame(self, sensor_data):
+        """
+        Unpack and return sensor data
+        """
+        try:
+            if len(sensor_data) == 10:
+                unpacked_data = struct.unpack('<HHxxBB', sensor_data[2:])
+            else:
+                unpacked_data = struct.unpack('<HHxxBBB', sensor_data[2:])
+        except:
+            return None
+        # Check data values:
+        try:
+            pm25 = float(unpacked_data[0] / 10.0)
+            pm10 = float(unpacked_data[1] / 10.0)
+            tsp = float(unpacked_data[2] / 10.0)
+        except:
+            return None
+        # Data checksum:
+        checksum = sum(ord(v) for v in sensor_data[2:8]) % 256
+        # If checksum is good:
+        if (checksum == unpacked_data[2] and
+                unpacked_data[3] == 0xab):
+            processed_data = {'pm2': pm25,
+                              'pm10': pm10,
+                              'TSP': tsp,
+                              'Check': 0}
+        else:
+            processed_data = {'pm2': MISSING_VALUE,
+                              'pm10': MISSING_VALUE,
+                              'TSP': MISSING_VALUE,
+                              'Check': 999}
+        return processed_data
+
+    def sensor_read(self, serial_conn):
+        """
+        Read the data, get the bytes and send to process_frame()
+        """
+        # init data_byte variable:
+        data_byte = 0
+        while data_byte != "\xaa":
+            data_byte = serial_conn.read(size=1)
+            data_bytes = serial_conn.read(size=10)
+            if data_bytes[0] == "\xc0":
+                sensor_data = self.process_frame(data_byte + data_bytes)
+                return sensor_data
+
+    def get_data(self):
+        """
+        Open serial device, read and return data
+        """
+        # Open the connection:
+        self.open_conn()
+        # Get data via sensor_read():
+        sensor_data = self.sensor_read(self.serial_conn)
+        # Close the connection:
+        self.serial_conn.close()
+        # Return data:
+        return sensor_data
+
+def sigint_handler(sigint_signal, sigint_frame):
+    """
+    Keyboard interrupt handler
+    """
+    sys.exit(0)
+
+def get_gps_data():
+    """
+    Get lat, lon and alt from gpsd
+    """
+    # Init default data:
+    gps_data = {'lat': MISSING_VALUE,
+                'lon': MISSING_VALUE,
+                'alt': MISSING_VALUE}
+    # Init object:
+    gps_obj = gps.gps()
+    gps_obj.stream()
+    # Have to poke the gpsd for messages ... :
+    while True:
+        # Check for devices:
+        gps_msg_00 = gps_obj.next()
+        if (gps_msg_00['class'] == 'DEVICES' and
+                gps_msg_00['devices']):
+            while True:
+                # Check for data:
+                gps_msg_01 = gps_obj.next()
+                if gps_msg_01['class'] == 'TPV':
+                    try:
+                        new_gps_data = {}
+                        new_gps_data['lat'] = gps_msg_01['lat']
+                        new_gps_data['lon'] = gps_msg_01['lon']
+                        new_gps_data['alt'] = gps_msg_01['alt']
+                        # Float values to ensure numeric:
+                        gps_data['lat'] = float(new_gps_data['lat'])
+                        gps_data['lon'] = float(new_gps_data['lon'])
+                        gps_data['alt'] = float(new_gps_data['alt'])
+                        # Data received, break:
+                        break
+                    except:
+                        # TPV message does not contain data ... break:
+                        break
+            # TPV message received ... break:
+            break
+        if (gps_msg_00['class'] == 'DEVICES' and not
+                gps_msg_00['devices']):
+            # No devices ... break:
+            break
+    # Clear gps object:
+    del gps_obj
+    # Return data:
+    return gps_data
+
+def get_csv_header():
+    """
+    Create CSV header
+    """
+    # Init header line:
+    csv_header = 'time,lat,lon,alt'
+    # For each defined SDS sensor:
+    for sds_sensor in SDS_SENSORS:
+        # Add header data:
+        sensor_header = '{0}-pm2.5,{0}-pm10,{0}-TSP'.format(sds_sensor['name'])
+        csv_header = ','.join([csv_header, sensor_header])
+    return csv_header
+
+def get_csv_data(current_time):
+    """
+    Tries to get time and GPS information, as well as any data from attached
+    SDS sensors, and return comma separated values
+    """
+    # Current time:
+    date_time = current_time.strftime(DATE_FORMAT)
+    csv_data = '{}'.format(date_time)
+    # GPS data:
+    gps_data = get_gps_data()
+    gps_data_str = '{},{},{}'.format(gps_data['lat'], gps_data['lon'],
+                                     gps_data['alt'])
+    csv_data = ','.join([csv_data, gps_data_str])
+    # For each sensor:
+    for sds_sensor in SDS_SENSORS:
+        # Create sensor object:
+        port = sds_sensor['port']
+        baud_rate = sds_sensor['baud_rate']
+        # Get data:
+        try:
+            sensor = SDS011(port, baud_rate)
+            data = sensor.get_data()
+            sensor_data = '{},{},{}'.format(data['pm2'], data['pm10'], data['TSP'])
+            del sensor
+        except:
+            sensor_data = '{0},{0},{0}'.format(MISSING_VALUE)
+        csv_data = ','.join([csv_data, sensor_data])
+    # Return data:
+    return csv_data
+
+def main():
+    """
+    Main function for logging data
+    """
+    # Set up keyboard interrupt handler:
+    signal.signal(signal.SIGINT, sigint_handler)
+    # Loop until further notice ... :
+    while True:
+        # Start timing:
+        time_init = time.time()
+        # Current date:
+        current_date = datetime.datetime.now()
+        # Date format for output file:
+        fn_date_format = '%Y-%m-%d'
+        fn_date = current_date.strftime(fn_date_format)
+        # Get hostname:
+        host_name=os.uname()[1][-5:]
+        # CSV file name:
+        csv_file_name = 'AQ_{}_{}.csv'.format(host_name, fn_date)
+        # Output file:
+        csv_file_path = os.sep.join([OUT_DIR, csv_file_name])
+        # Check output file size:
+        try:
+            csv_file_size = os.path.getsize(csv_file_path)
+        except:
+            csv_file_size = 0
+        # Open CSV file for appending:
+        with open(csv_file_path, 'a') as csv_file:
+            # If file size is 0, add header:
+            if not csv_file_size:
+                # Get header:
+                csv_hdr = get_csv_header()
+                # Write to file:
+                csv_file.write('{}\n'.format(csv_hdr))
+                # Also print to stdout:
+                sys.stdout.write('{}\n'.format(csv_hdr))
+            # Get csv data:
+            sensor_data = get_csv_data(current_date)
+            # Write to file:
+            csv_file.write('{}\n'.format(sensor_data))
+            # Also print to stdout:
+            sys.stdout.write('{}\n'.format(sensor_data))
+        # Check run time:
+        run_time = time.time() - time_init
+        sleep_time = DATA_INTERVAL - run_time
+        # Sleep for required interval:
+        if 0 < sleep_time < DATA_INTERVAL:
+            time.sleep(sleep_time)
+        else:
+            time.sleep(DATA_INTERVAL)
+
+if __name__ == '__main__':
+    main()
